@@ -6,6 +6,7 @@
 dist
 build
 eggs
+external
 parts
 bin
 var
