@@ -142,7 +142,6 @@ def messageItems(readable):
     if level != 0:
         raise Error(u'nested block must be closed (state=%r, level=%d)' % (state, level))
 
-
 def structuredItems(messageToRead):
     assert messageToRead is not None
     block = None
@@ -171,26 +170,55 @@ def structuredItems(messageToRead):
     if valuesSoFar:
         yield (level, block, field, valuesSoFar)
 
-
+class Trade(object):
+    '''A trade in a `Report`.'''
+    def __init__(self):
+        self.accrInterest = None
+        self.ca = None
+        self.ccpStatus = None
+        self.clearingMember = None
+        self.exchangeMember = None
+        self.leg = None
+        self.orderNettingType = None
+        self.orderNumber = None
+        self.originType = None
+        self.settlementDate = None
+        self.tradeDate = None
+        self.tradeLocation = None
+        self.tradeNumber = None
+        self.tradeSettlement = None
+        self.tradeType = None
+        self.transactionType = None
+        
 class Report(object):
     def __init__(self, messageToRead):
         assert messageToRead is not None
         self.report = None
         for item in structuredItems(messageToRead):
             _log.debug(u'item: %s', item)
-            level, block, field, values = item
             leveBlockField = item[:3]
             if self.report is None:
                 if leveBlockField == (1, 4, '77E'):
                     report = self._valueFor(item, '/TRNA')
                     if self.report is None:
                         self.report = report
+                        if self.report == u'RAWCE260':
+                            self._initCe260()
                     else:
                         raise Error(u'cannot set report to "%s" because it already is "%s"' % (report, self.report))
             elif self.report == u'RAWCE260':
                 self._processCe260(item)
             else:
                 raise Error(u'cannot (yet) read reports of type "%s"' % self.report)
+
+        if self.report == u'RAWCE260':
+            # Add possibly remaining trade.
+            self._appendPossibleTrade()
+            self._trade = None
+            if self.trades == []:
+                raise Error(u'report must contain at least 1 trade (starting with :94B::PRIC)')
+
+
 
     def _valueFor(self, item, valuePrefix, strip=True, required=True, defaultValue=None):
         assert item is not None
@@ -310,29 +338,26 @@ class Report(object):
             raise Error(errorMessage(error))
         return (currency, amount)
 
+
     def _initCe260(self):
         self.clearingMember = None
         self.financialInstrument = None
         self.safekeepingAccount = None
-        self.transactionDetails = None
+        self.trades = []
+        self._trade = None
 
-        # Transaction details
-        self.accrInterest = None
-        self.ca = None
-        self.ccpStatus = None
-        self.clearingMember = None
-        self.exchangeMember = None
-        self.leg = None
-        self.orderNettingType = None
-        self.orderNumber = None
-        self.originType = None
-        self.settlementDate = None
-        self.tradeDate = None
-        self.tradeLocation = None
-        self.tradeNumber = None
-        self.tradeSettlement = None
-        self.tradeType = None
-        self.transactionType = None
+    def _checkHasTrade(self, field, name=None):
+        if self._trade is None:
+            message = u'trade must start with 94B::PRIC before details can be specified with '
+            if name is None:
+                message += field
+            else:
+                message += field  + '::' + name
+            raise Error(message)
+
+    def _appendPossibleTrade(self):
+        if self._trade is not None:
+            self.trades.append(self._trade)
 
     def _processCe260(self, item):
         def createTransactionDetailsNameToValueMap(item):
@@ -370,9 +395,11 @@ class Report(object):
             if field == '19A':
                 name, value = self._slashedNameValue(item)
                 if name == 'ACRU':
-                    self.accrInterest = self._currencyAndAmountFrom(item, name, value)
+                    self._checkHasTrade(field, name)
+                    self._trade.accrInterest = self._currencyAndAmountFrom(item, name, value)
                 elif name == 'PSTA':
-                    self.tradeSettlement = self._currencyAndAmountFrom(item, name, value)
+                    self._checkHasTrade(field, name)
+                    self._trade.tradeSettlement = self._currencyAndAmountFrom(item, name, value)
             elif field == '20C':
                 name, value = self._slashedNameValue(item)
                 if name == 'PREV':
@@ -382,30 +409,36 @@ class Report(object):
             if field == '36B':
                 name, value = self._slashedNameValue(item)
                 if name == 'ACRU':
-                    self.accrInterest = self._currencyAndAmountFrom(item, name, value)
+                    self._checkHasTrade(field, name)
+                    self._trade.nominal = self._currencyAndAmountFrom(item, name, value)
             elif field == '70E':
-                self.transactionDetails = createTransactionDetailsNameToValueMap(item)
-                self.ca = self.transactionDetails.get('CA')
-                self.ccpStatus = self.transactionDetails.get('CCPSTAT')
-                self.clearingMember = self.transactionDetails.get('CLGM')
-                self.exchangeMember = self.transactionDetails.get('EXCH')
-                self.leg = self.transactionDetails.get('LN')
-                self.orderNettingType = self.transactionDetails.get('ORDNETT')
-                self.orderNumber = self.transactionDetails.get('ORDNB')
-                self.originType = self.transactionDetails.get('OT')
-                self.tradeType = self.transactionDetails.get('TTYP')
-                self.transactionType = self.transactionDetails.get('TYPE')
+                self._checkHasTrade(field)
+                transactionDetails = createTransactionDetailsNameToValueMap(item)
+                self._trade.clearingMember = transactionDetails.get('CLGM')
+                self._trade.exchangeMember = transactionDetails.get('EXCH')
+                self._trade.leg = transactionDetails.get('LN')
+                self._trade.originType = transactionDetails.get('OT')
+                self._trade.transactionType = transactionDetails.get('TYPE')
+                self._trade.ca = transactionDetails.get('CA')
+                self._trade.ccpStatus = transactionDetails.get('CCPSTAT')
+                self._trade.orderNettingType = transactionDetails.get('ORDNETT')
+                self._trade.orderNumber = transactionDetails.get('ORDNB')
+                self._trade.tradeType = transactionDetails.get('TTYP')
             elif field == '94B':
                 name, value = self._slashedNameValue(item)
-                if name == 'TRAD':
+                if name == 'PRIC':
+                    self._appendPossibleTrade()
+                    self._trade = Trade()
+                elif name == 'TRAD':
+                    self._checkHasTrade(field, name)
                     ExchHeader = 'EXCH/'
                     if value.startswith(ExchHeader):
-                        self.tradeLocation = value[len(ExchHeader):]
+                        self._trade.tradeLocation = value[len(ExchHeader):]
             elif field == '97A':
                 self.safekeepingAccount = self._valueFor(item, ':SAFE//')
             elif field == '98A':
                 name, value = self._slashedNameValue(item)
                 if name == 'SETT':
-                    self.settlementDate = self._dateFromIsoText(item, name, value)
+                    self._trade.settlementDate = self._dateFromIsoText(item, name, value)
                 elif name == 'TRAD':
-                    self.tradeDate = self._dateFromIsoText(item, name, value)
+                    self._trade.tradeDate = self._dateFromIsoText(item, name, value)
