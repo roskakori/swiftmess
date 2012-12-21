@@ -24,6 +24,7 @@ _log = logging.getLogger('swift')
 
 __version__ = '0.2'
 
+_FamtMarker = 'FAMT/'
 
 class Error(Exception):
     pass
@@ -218,8 +219,6 @@ class Report(object):
             if self.trades == []:
                 raise Error(u'report must contain at least 1 trade (starting with :94B::PRIC)')
 
-
-
     def _valueFor(self, item, valuePrefix, strip=True, required=True, defaultValue=None):
         assert item is not None
         assert valuePrefix
@@ -338,9 +337,7 @@ class Report(object):
             raise Error(errorMessage(error))
         return (currency, amount)
 
-
     def _initCe260(self):
-        self.clearingMember = None
         self.financialInstrument = None
         self.safekeepingAccount = None
         self.trades = []
@@ -352,7 +349,7 @@ class Report(object):
             if name is None:
                 message += field
             else:
-                message += field  + '::' + name
+                message += field + '::' + name
             raise Error(message)
 
     def _appendPossibleTrade(self):
@@ -402,15 +399,24 @@ class Report(object):
                     self._trade.tradeSettlement = self._currencyAndAmountFrom(item, name, value)
             elif field == '20C':
                 name, value = self._slashedNameValue(item)
-                if name == 'PREV':
-                    self.tradeNumber = value
+                if name == 'TRRF':
+                    self._checkHasTrade(field, name)
+                    _TradeNumberIndex = 8
+                    if len(value) <= _TradeNumberIndex:
+                        raise Error(u'trade number in %s::%s must have at least %d characters: "%s"' % (field, name, _TradeNumberIndex + 1, value))
+                    self._trade.tradeNumber = value[_TradeNumberIndex:]
             elif field == '35B':
                 self.financialInstrument = values
             if field == '36B':
                 name, value = self._slashedNameValue(item)
-                if name == 'ACRU':
+                if name == 'PSTA':
                     self._checkHasTrade(field, name)
-                    self._trade.nominal = self._currencyAndAmountFrom(item, name, value)
+                    if value.startswith(_FamtMarker):
+                        nominalText = value[len(_FamtMarker):]
+                        try:
+                            self._trade.nominal = self._decimalFrom(item, name, nominalText)
+                        except Exception, error:
+                            raise Error(error)
             elif field == '70E':
                 self._checkHasTrade(field)
                 transactionDetails = createTransactionDetailsNameToValueMap(item)
